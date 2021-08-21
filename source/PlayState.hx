@@ -8,6 +8,12 @@ import flixel.graphics.frames.FlxAtlasFrames;
 import flixel.FlxSprite;
 import flixel.tweens.FlxTween;
 import flixel.util.FlxColor;
+import flixel.FlxSubState;
+import openfl.Assets;
+import haxe.Json;
+import flixel.math.FlxMath;
+
+using StringTools;
 
 class PlayState extends FlxUIState
 {
@@ -22,25 +28,19 @@ class PlayState extends FlxUIState
 
     private var kade:KadeDev;
 
-    private var burgerTimes:Array<Float> = [
-        9600, 10800, 12000, 13200, 
-        14400, 15600, 16800, 18000,
-        19200, 20400, 21600, 22800,
-        24000, 25200, 26400, 27600,
-        28800, 30000, 31200, 32400,
-        33600, 34800, 36000, 37200,
-        38400, 39000, 39600, 40800, 41400, 42000,
-        43200, 43800, 44400, 45600, 46200, 46800,
-        48000, 48300, 48600, 48900, 49800,
-        50400, 50700, 51000, 51300, 52200,
-        52800, 53400, 54000, 54600, 55200, 55800, 56400, 57000,
-        57600
-    ];
+    private var _song:KadeDevsTunes;
+
+    private var burgerTimes:Array<Float> = [];
+
     private var burgers:FlxTypedGroup<Burger>;
-
     private var flipping_burgers:FlxTypedGroup<FlxSprite>;
+    private var burgsFlipped:Array<FlxSprite> = [];
+    private var missed:Int = 0;
+    private var missCounter:Array<FlxSprite> = [];
 
-    override function create()
+    private var paused:Bool = false;
+
+    override function create() // 185
     {
         add(new FlxSprite().loadGraphic('assets/images/kitch.png'));
         add(new FlxSprite(97, 431).loadGraphic('assets/images/belt.png'));
@@ -60,10 +60,17 @@ class PlayState extends FlxUIState
         kade = new KadeDev(FlxG.width - 818 + 100, FlxG.height - 755 + 100);
         add(kade);
 
-        FlxG.sound.playMusic('assets/music/song.ogg');
+        FlxG.sound.playMusic('assets/music/song.${TitleState.ext}');
+        FlxG.sound.music.looped = false;
+        FlxG.sound.music.onComplete = function() FlxG.switchState(new TitleState());
 
         burgers = new FlxTypedGroup<Burger>();
         add(burgers);
+
+        if (_song == null)
+            _song = loadSong('song');
+
+        burgerTimes = _song.burgTimes;
 
         for (i in burgerTimes)
         {
@@ -71,7 +78,19 @@ class PlayState extends FlxUIState
             burgers.add(burger);
         }
 
-        FlxG.mouse.visible = false;
+        for (i in 0...3)
+        {
+            var thing:FlxSprite = new FlxSprite(25, 150 * i).loadGraphic('assets/images/burgIcons.png', true, 295, 332);
+            thing.animation.add('idle', [0], 0, false);
+            thing.animation.add('lose', [1], 0, false);
+            thing.animation.play('idle');
+            thing.setGraphicSize(0, 150);
+            thing.updateHitbox();
+            add(thing);
+            missCounter.push(thing);
+        }
+
+        Conductor.changeBPM(_song.bpm);
 
         super.create();
     }
@@ -81,9 +100,11 @@ class PlayState extends FlxUIState
         Conductor.songPosition = FlxG.sound.music.time;
 
         burgers.forEachAlive(function(burger:Burger){
-            burger.x = (Burger.offsetX + (Conductor.songPosition - burger.flipTime) * 0.45);
+            burger.x = (Burger.offsetX + (Conductor.songPosition - burger.flipTime) * (0.45 * FlxMath.roundDecimal(_song.speed, 2)));
 
-            if (FlxG.keys.justPressed.SPACE) {
+            if (burger.x > 1280) missBurg(burger);
+
+            if (FlxG.keys.justPressed.SPACE && !paused) {
                 kade.animation.play('flip', true);
                 kade.offset.set(89, 67);
                 if (burger.canBeFlipped && !burger.tooLate)
@@ -91,7 +112,21 @@ class PlayState extends FlxUIState
             }
         });
 
-        if (Conductor.songPosition > lastStep + Conductor.stepCrochet - Conductor.safeZoneOffset
+        for (burg in burgsFlipped)
+        {
+            burg.x += #if web 6 #else 3 #end;
+            if (burg.x > 1280) {
+                burgsFlipped.remove(burg);
+                burg.kill();
+            }
+        }
+
+        for (thing in missCounter)
+        {
+            thing.animation.play(missCounter.indexOf(thing) < missed ? 'lose' : 'idle');
+        }
+
+        if (Conductor.songPosition > lastStep + Conductor.stepCrochet - Conductor.safeZoneOffset // we are NOT going to talk about how this is sto- I mean uhh """borrowed""" from FNF.
 			|| Conductor.songPosition < lastStep + Conductor.safeZoneOffset)
 		{
 			if (Conductor.songPosition > lastStep + Conductor.stepCrochet)
@@ -107,6 +142,45 @@ class PlayState extends FlxUIState
         FlxG.watch.addQuick('savezone', Conductor.safeZoneOffset);
 
         super.update(elapsed);
+
+        if (FlxG.keys.justPressed.ENTER && !paused)
+		{
+			persistentUpdate = false;
+			persistentDraw = true;
+			paused = true;
+
+			openSubState(new PauseSubState());
+		}
+    }
+
+    override function openSubState(SubState:FlxSubState)
+    {
+        if (paused && FlxG.sound.music != null)
+			FlxG.sound.music.pause();
+
+        super.openSubState(SubState);
+    }
+
+    override function closeSubState()
+    {
+        if (paused && FlxG.sound.music != null) {
+			FlxG.sound.music.play();
+            paused = false;
+        }
+
+        super.closeSubState();
+    }
+
+    public static function loadSong(song:String):KadeDevsTunes
+    {
+        var rawJson = Assets.getText('assets/data/$song.json').trim();
+
+		while (!rawJson.endsWith("}"))
+		{
+			rawJson = rawJson.substr(0, rawJson.length - 1);
+		}
+
+        return cast Json.parse(rawJson).song;
     }
 
     private function flipBurger(burger:Burger):Void
@@ -115,9 +189,26 @@ class PlayState extends FlxUIState
         flip.frames = FlxAtlasFrames.fromSparrow('assets/images/flipped_burger.png', 'assets/images/flipped_burger.xml');
         flip.animation.addByPrefix('idle', 'burgflip', 24, false);
         flip.animation.play('idle');
-        flip.animation.finishCallback = function(s:String) FlxTween.tween(flip, {x: flip.x + 350}, 1.5, {onComplete: function(twn:FlxTween) flip.kill()});
+        flip.animation.finishCallback = function(s:String) burgsFlipped.push(flip);
         flipping_burgers.add(flip);
         burger.kill();
+    }
+
+    private function missBurg(burger:Burger):Void
+    {
+        burger.kill();
+        missed++;
+        if (missed > 3)
+            loseGame();
+    }
+
+    private function loseGame():Void
+    {
+        persistentUpdate = false;
+		persistentDraw = true;
+		paused = true;
+
+		openSubState(new LoseSubState());
     }
 
     public function stepHit():Void
@@ -146,4 +237,10 @@ class PlayState extends FlxUIState
             kade.offset.set();
         }
 	}
+}
+
+typedef KadeDevsTunes = {
+    var burgTimes:Array<Float>;
+    var speed:Float;
+    var bpm:Int;
 }
