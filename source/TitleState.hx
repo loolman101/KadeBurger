@@ -9,6 +9,7 @@ import flixel.math.FlxRect;
 import flixel.addons.transition.FlxTransitionableState;
 import flixel.addons.transition.TransitionData;
 import flixel.graphics.FlxGraphic;
+import openfl.Assets;
 
 class TitleState extends FlxUIState
 {
@@ -54,6 +55,12 @@ class TitleState extends FlxUIState
             FlxG.sound.music.stop();
             FlxG.switchState(new PlayState());
         }
+
+        #if !web
+        if (FlxG.keys.justPressed.SEVEN)
+            FNFConverter.convert(Assets.getText('assets/data/SONG_TO_CONVERT.txt'));
+        #end
+        
         super.update(t);
     }
 
